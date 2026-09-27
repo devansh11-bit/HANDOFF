@@ -1,6 +1,6 @@
 from .project_service import get_rows, save_memory, save_decision, save_task
 
-CATEGORIES={"goals":"Goals","requirements":"Requirements","technologies":"Important Context","completed":"Completed","pending":"Pending","important_context":"Important Context","open_questions":"Open Questions","risks":"Risks / Issues"}
+CATEGORIES={"goals":"Goals","requirements":"Requirements","technologies":"Technology","completed":"Completed","pending":"Pending","important_context":"Important Context","open_questions":"Open Questions","risks":"Risks / Issues"}
 
 
 def store_extraction(pid,data,source=""):
@@ -22,6 +22,9 @@ def store_extraction(pid,data,source=""):
     for value in data.get("pending",[]) if isinstance(data.get("pending",[]),list) else []:
         title=value.get("title","") if isinstance(value,dict) else str(value)
         if title: save_task(pid,title,"Pending","",source)
+    if count:
+        from .project_service import connect, record
+        with connect() as db: record(db,pid,"MEMORY_UPDATED",f"Project memory updated from {source or 'project material'}")
     return count
 
 

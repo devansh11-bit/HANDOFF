@@ -6,9 +6,17 @@ ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "data" / "handoff.sqlite3"
 
 
+class ClosingConnection(sqlite3.Connection):
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 def connect():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(DB_PATH)
+    db = sqlite3.connect(DB_PATH, factory=ClosingConnection)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys=ON")
     return db
@@ -22,13 +30,18 @@ def init_db():
     with connect() as db:
         db.executescript("""
         CREATE TABLE IF NOT EXISTS projects(id INTEGER PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS files(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE, filename TEXT NOT NULL, file_type TEXT NOT NULL, path TEXT NOT NULL, extracted_text TEXT DEFAULT '', uploaded_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS files(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE, filename TEXT NOT NULL, file_type TEXT NOT NULL, path TEXT NOT NULL, extracted_text TEXT DEFAULT '', uploaded_at TEXT NOT NULL, analysis_status TEXT NOT NULL DEFAULT 'Pending', analysis_error TEXT DEFAULT '');
         CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE, role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS memory_items(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE, category TEXT NOT NULL, content TEXT NOT NULL, source TEXT DEFAULT '', confidence REAL DEFAULT 1, created_at TEXT NOT NULL, UNIQUE(project_id,category,content));
         CREATE TABLE IF NOT EXISTS decisions(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE, title TEXT NOT NULL, description TEXT DEFAULT '', reason TEXT DEFAULT '', source TEXT DEFAULT '', created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS tasks(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE, title TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'Pending', assignee TEXT DEFAULT '', source TEXT DEFAULT '', created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS activity(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE, event_type TEXT NOT NULL, description TEXT NOT NULL, created_at TEXT NOT NULL);
         """)
+        columns={row[1] for row in db.execute("PRAGMA table_info(files)")}
+        if "analysis_status" not in columns:
+            db.execute("ALTER TABLE files ADD COLUMN analysis_status TEXT NOT NULL DEFAULT 'Pending'")
+        if "analysis_error" not in columns:
+            db.execute("ALTER TABLE files ADD COLUMN analysis_error TEXT DEFAULT ''")
 
 
 def record(db, pid, event, description):
@@ -40,6 +53,8 @@ def create_project(name, description):
     with connect() as db:
         t=now(); cur=db.execute("INSERT INTO projects(name,description,created_at,updated_at) VALUES(?,?,?,?)",(name.strip(),description.strip(),t,t))
         pid=cur.lastrowid; record(db,pid,"PROJECT_CREATED",f"Project created: {name.strip()}")
+        for folder in (ROOT/"data"/"projects"/str(pid)/"files",ROOT/"data"/"projects"/str(pid)/"extracted"):
+            folder.mkdir(parents=True,exist_ok=True)
         return pid
 
 
@@ -88,7 +103,13 @@ def save_message(pid,role,content):
         if role=="user": record(db,pid,"MESSAGE_ADDED","Project chat updated")
 
 
-def add_file(pid,filename,file_type,path,text):
+def add_file(pid,filename,file_type,path,text,analysis_status="Pending"):
     with connect() as db:
-        db.execute("INSERT INTO files(project_id,filename,file_type,path,extracted_text,uploaded_at) VALUES(?,?,?,?,?,?)",(pid,filename,file_type,path,text,now()))
+        cursor=db.execute("INSERT INTO files(project_id,filename,file_type,path,extracted_text,uploaded_at,analysis_status) VALUES(?,?,?,?,?,?,?)",(pid,filename,file_type,path,text,now(),analysis_status))
         record(db,pid,"FILE_UPLOADED",f"Uploaded {filename}")
+        return cursor.lastrowid
+
+
+def update_file_analysis(file_id,pid,status,error=""):
+    with connect() as db:
+        db.execute("UPDATE files SET analysis_status=?,analysis_error=? WHERE id=? AND project_id=?",(status,error,file_id,pid))
