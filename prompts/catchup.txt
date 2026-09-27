@@ -1,0 +1,1 @@
+Create a concise catch-up from the supplied project memory and activity. Cover What changed, New decisions, Completed, Pending, Important issues, Recommended next actions. Do not claim a change without evidence; say when there is no recent activity.

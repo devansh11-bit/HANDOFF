@@ -1,0 +1,1 @@
+Create a Markdown handoff grounded only in supplied project context. Include Project Overview, Current State, Completed Work, Pending Work, Important Decisions, Why Those Decisions Were Made, Known Issues, Open Questions, Next Actions, Important Files / Sources. Mark unavailable information as not recorded. Do not invent.
