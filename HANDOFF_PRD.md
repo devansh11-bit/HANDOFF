@@ -1,5 +1,13 @@
 # HANDOFF --- Product Requirements Document (PRD)
 
+## Shared Projects Addendum
+
+HANDOFF supports team workspaces through Supabase. A member can create a project, share its unique six-character project code or invite URL, and invite teammates who join with a display name. The owner is recorded as the first member.
+
+Project files, shared Project Memory, decisions, tasks, activity, and chat belong to the project and are visible to its members. Actions record the member name where applicable. Project Chat, Catch Me Up, and Handoff Package use the shared project context and recorded activity.
+
+Local development remains available through SQLite and local files when Supabase is not configured. In that mode, project codes and data work only on that local installation; cloud collaboration requires SUPABASE_URL and SUPABASE_KEY.
+
 ## 1. Product Overview
 
 **Product:** HANDOFF\

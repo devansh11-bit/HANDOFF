@@ -27,6 +27,12 @@
 
 Without Gemini credentials, project management, memory, tasks, and the demo still work; AI actions show a clear setup message and handoff can use the recorded memory fallback.
 
+## Shared projects
+
+By default, HANDOFF uses SQLite and local files. The sidebar shows that this is local development mode; project codes work only against the same local installation. To enable cross-device collaboration, configure SUPABASE_URL and SUPABASE_KEY, run supabase_setup/schema.sql in the Supabase SQL Editor, and create the private project-files bucket (the schema creates it). Set SUPABASE_SERVICE_ROLE_KEY only as a server-side deployment secret when private Storage policies require it; it takes precedence over SUPABASE_KEY and must never be exposed to a browser or committed. Set HANDOFF_BASE_URL to the deployed app URL to produce invite links.
+
+Members can create a project, share its code or invite link, and join by entering a display name. Projects share files, memory, decisions, tasks, chat, and activity. The MVP uses project codes and names without sign-in; do not use it for sensitive data until stronger member authentication and access policies are added.
+
 ## Architecture
 
 Streamlit provides the workspace UI. Python service modules handle SQLite persistence, local file processing, memory normalization, Gemini calls, and handoff generation. Uploaded files live under `data/projects/<project_id>/files/`; SQLite stores project metadata and extracted text. Set `GEMINI_API_KEY` and `GEMINI_MODEL` as Streamlit Community Cloud secrets for hosted use. Do not commit `.env` or private project files.

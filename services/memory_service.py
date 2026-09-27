@@ -23,8 +23,8 @@ def store_extraction(pid,data,source=""):
         title=value.get("title","") if isinstance(value,dict) else str(value)
         if title: save_task(pid,title,"Pending","",source)
     if count:
-        from .project_service import connect, record
-        with connect() as db: record(db,pid,"MEMORY_UPDATED",f"Project memory updated from {source or 'project material'}")
+        from .project_service import add_activity
+        add_activity(pid,"MEMORY_UPDATED",f"Project memory updated from {source or 'project material'}")
     return count
 
 

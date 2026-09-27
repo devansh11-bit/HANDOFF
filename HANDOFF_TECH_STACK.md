@@ -1,5 +1,13 @@
 # HANDOFF --- Technical Stack Specification
 
+## Shared Projects Addendum
+
+- Shared database: Supabase PostgreSQL through the official supabase Python client.
+- Shared files: private Supabase Storage bucket project-files; local mode continues to use data/projects/.
+- Configuration: SUPABASE_URL and SUPABASE_KEY are deployment environment variables. Keep the server key in Streamlit deployment secrets; never commit .env. HANDOFF_BASE_URL can set the canonical invite-link base. The SQL bootstrap schema is supabase_setup/schema.sql.
+- Backend selection: configured Supabase is the shared source of truth; absent configuration selects the SQLite/local-files fallback and displays that cloud sharing is unavailable.
+- Member model: project codes and display names, with session-local member identity; no OAuth, passwords, or enterprise authorization in this MVP.
+
 ## 1. Technical Goal
 
 Use the simplest reliable technology stack that can produce a convincing

@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 
 import streamlit as st
 
@@ -7,6 +8,7 @@ from services.file_service import save_upload
 from services.gemini_service import GeminiService
 from services.handoff_service import fallback_handoff
 from services.memory_service import build_context, store_extraction
+from services import database_service
 
 
 ROOT = Path(__file__).resolve().parent
@@ -43,6 +45,11 @@ st.markdown(
 
 db.init_db()
 ai = GeminiService()
+shared_cloud_connected = database_service.check_connection()
+if "member_name" not in st.session_state:
+    st.session_state.member_name = "You"
+if "member_name_input" not in st.session_state:
+    st.session_state.member_name_input = st.session_state.member_name
 
 
 def clear_project_outputs():
@@ -66,9 +73,15 @@ def analyze_file(file_row, pid):
         return
     db.update_file_analysis(file_row["id"], pid, "Analyzing")
     try:
+        analysis_path = file_row["path"]
+        if database_service.is_configured() and not Path(analysis_path).is_file():
+            cache = ROOT / "data" / "projects" / str(pid) / "files" / Path(analysis_path).name
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            cache.write_bytes(database_service.download_file(analysis_path))
+            analysis_path = str(cache)
         with st.spinner(f"Analyzing {file_row['filename']} with Gemini…"):
             extracted = ai.analyze_project_material(
-                file_row["filename"], file_row["extracted_text"] or "", file_row["path"]
+                file_row["filename"], file_row["extracted_text"] or "", analysis_path
             )
             count = store_extraction(pid, extracted, file_row["filename"])
         db.update_file_analysis(file_row["id"], pid, "Analyzed")
@@ -105,7 +118,7 @@ def ensure_demo_project():
         db.save_task(pid, "Integrate the backend", source="Demo project brief")
         db.save_task(pid, "Test fill-level readings", source="Demo project brief")
 
-    if not db.get_rows("files", pid):
+    if not database_service.is_configured() and not db.get_rows("files", pid):
         folder = ROOT / "data" / "projects" / str(pid) / "files"
         folder.mkdir(parents=True, exist_ok=True)
         brief = folder / "smart_waste_demo_brief.txt"
@@ -125,6 +138,38 @@ def ensure_demo_project():
 # Sidebar: creation is available from every page, and project switching is scoped to the active ID.
 st.sidebar.markdown("# ↗ HANDOFF")
 st.sidebar.caption("One project. One shared context.")
+if shared_cloud_connected:
+    st.sidebar.success("Supabase Database Connected")
+elif database_service.is_configured():
+    st.sidebar.warning("Supabase is configured but unavailable. Check the client dependency and server credentials.")
+else:
+    st.sidebar.info("Supabase is not configured.\nShared collaboration is unavailable. Configure SUPABASE_URL and SUPABASE_KEY.")
+if "pending_member_name" in st.session_state:
+    st.session_state["member_name_input"] = st.session_state.pop("pending_member_name")
+st.session_state.member_name = st.sidebar.text_input("Your name for this session", key="member_name_input")
+invite_code = st.query_params.get("project", "")
+if invite_code or st.session_state.get("show_join_project"):
+    st.sidebar.markdown("### JOIN A PROJECT")
+    with st.sidebar.form("join_project_form"):
+        join_code = st.text_input("Project Code", value=invite_code, key="join_code_input")
+        join_name = st.text_input("Your Name", value=st.session_state.member_name, key="join_name_input")
+        join_submit = st.form_submit_button("Join Project", type="primary", use_container_width=True)
+    if join_submit:
+        joined = db.join_project(join_code, join_name.strip())
+        if joined:
+            st.session_state.member_name = join_name.strip()
+            st.session_state.pending_member_name = join_name.strip()
+            st.session_state.joined_project_id = joined["id"]
+            st.session_state.project_select = joined["id"]
+            st.session_state.workspace_page = "Overview"
+            st.session_state.show_join_project = False
+            st.query_params.clear()
+            st.rerun()
+        else:
+            st.sidebar.error("No project was found for that code.")
+if st.sidebar.button("+ Join Project", use_container_width=True, key="join_project_toggle"):
+    st.session_state.show_join_project = not st.session_state.get("show_join_project", False)
+    st.rerun()
 if st.sidebar.button("+ New Project", type="primary", use_container_width=True, key="new_project_toggle"):
     st.session_state.show_new_project = not st.session_state.get("show_new_project", False)
 
@@ -141,7 +186,7 @@ if st.session_state.get("show_new_project", False):
         if not new_name.strip():
             st.sidebar.error("Enter a project name.")
         else:
-            new_id = db.create_project(new_name, new_description)
+            new_id = db.create_project(new_name, new_description, st.session_state.member_name.strip() or "You")
             st.session_state.project_select = new_id
             st.session_state.workspace_page = "Overview"
             st.session_state.show_new_project = False
@@ -149,7 +194,11 @@ if st.session_state.get("show_new_project", False):
             st.session_state.just_created_project = new_id
             st.rerun()
 
-projects = db.get_projects()
+try:
+    projects = db.get_projects()
+except Exception:
+    st.error("Supabase is configured but HANDOFF could not load shared projects. Check the Supabase client and server credentials.")
+    st.stop()
 if projects:
     st.sidebar.markdown("### YOUR PROJECTS")
     current_id = st.sidebar.selectbox(
@@ -180,6 +229,12 @@ else:
     page = "Overview"
 
 st.sidebar.divider()
+if current_id is not None:
+    team_members = db.get_project_members(current_id)
+    st.sidebar.markdown("### TEAM")
+    st.sidebar.caption(f"{len(team_members)} member(s)")
+    for team_member in team_members[:5]:
+        st.sidebar.write(f"👤 {team_member['member_name']}")
 st.sidebar.markdown("### AI ENGINE")
 if ai.available:
     st.sidebar.success("Gemini Connected")
@@ -225,8 +280,11 @@ if not projects:
     st.stop()
 
 if st.session_state.get("just_created_project") == current_id:
-    st.success("Your project is ready. Start by uploading project material. Gemini will analyze it and build your Project Memory.")
+    st.success(f"Project created: {project['name']} · Project Code: {project.get('project_code', 'Unavailable')}. Share the code or link with teammates.")
     st.session_state.pop("just_created_project", None)
+if st.session_state.get("joined_project_id") == current_id:
+    st.success(f"✓ Joined project · {project['name']}")
+    st.session_state.pop("joined_project_id", None)
 
 context = project_context(current_id)
 
@@ -234,6 +292,28 @@ if page == "Overview":
     st.markdown('<div class="eyebrow">PROJECT OVERVIEW</div>', unsafe_allow_html=True)
     st.title(project["name"])
     st.write(project["description"] or "Add project material to create a shared context for your team.")
+    members = db.get_project_members(current_id)
+    with st.container(border=True):
+        st.subheader("Team")
+        owner_name = project.get("owner_name") or (members[0]["member_name"] if members else "Not set")
+        st.caption(f"Owner · {owner_name} · {len(members)} member(s)")
+        st.write(" · ".join(f"👤 {member['member_name']}" for member in members) or "No members yet")
+        code = project.get("project_code", "")
+        base_url = os.getenv("HANDOFF_BASE_URL", "").strip()
+        if not base_url:
+            try:
+                base_url = st.context.url.split("?", 1)[0]
+            except Exception:
+                base_url = ""
+        share_link = f"{base_url}?project={code}" if base_url and code else ""
+        if code:
+            st.markdown("**Project Code**")
+            st.code(code)
+            st.caption("Share this code with teammates.")
+        if share_link:
+            st.markdown("**Share Link**")
+            st.code(share_link)
+            st.caption("Copy the link above and send it to your teammates.")
     tasks = db.get_rows("tasks", current_id)
     decisions = db.get_rows("decisions", current_id)
     files = db.get_rows("files", current_id)
@@ -312,7 +392,9 @@ if page == "Overview":
         st.subheader("Recent Decisions")
         if decisions:
             for item in decisions[:5]:
-                st.markdown(f"- **{item['title']}** — {item['reason'] or 'Reason not recorded'}")
+                author = item.get("member_name") or item.get("created_by") or item.get("added_by")
+                byline = f" · Added by {author}" if author else ""
+                st.markdown(f"- **{item['title']}** — {item['reason'] or 'Reason not recorded'}{byline}")
         else:
             st.caption("No decisions recorded yet.")
     with st.container(border=True):
@@ -320,7 +402,7 @@ if page == "Overview":
         activities = db.get_rows("activity", current_id, 6)
         if activities:
             for item in activities:
-                st.caption(f"{item['created_at'][:16].replace('T', ' ')} · {item['description']}")
+                st.caption(f"{item.get('member_name', 'Member')} · {item['created_at'][:16].replace('T', ' ')} · {item['description']}")
         else:
             st.caption("No activity yet. Project changes will appear here.")
 
@@ -342,15 +424,20 @@ elif page == "Files":
         if st.button("Upload Files", type="primary", disabled=not uploads, key="upload_files"):
             for uploaded in uploads or []:
                 try:
-                    path, text = save_upload(current_id, uploaded)
-                    file_id = db.add_file(current_id, uploaded.name, path.suffix.lower().lstrip("."), str(path), text)
+                    path, text, storage_path = save_upload(current_id, uploaded)
+                    file_id = db.add_file(current_id, uploaded.name, path.suffix.lower().lstrip("."), storage_path or str(path), text, member_name=st.session_state.member_name)
+                    if storage_path:
+                        st.success(f"Uploaded {uploaded.name} to shared project storage.")
                     if ai.available:
                         row = next(item for item in db.get_rows("files", current_id) if item["id"] == file_id)
                         analyze_file(row, current_id)
                     else:
                         st.success(f"Uploaded {uploaded.name}. It’s ready for Gemini analysis when a key is configured.")
                 except Exception as exc:
-                    st.error(f"Could not upload {uploaded.name}: {exc}")
+                    if "row-level security policy" in str(exc).lower():
+                        st.error(f"Could not upload {uploaded.name}: private Supabase Storage denied the write. Configure a bucket upload policy or set SUPABASE_SERVICE_ROLE_KEY in server secrets.")
+                    else:
+                        st.error(f"Could not upload {uploaded.name}: {exc}")
             st.rerun()
     with st.container(border=True):
         st.subheader("How HANDOFF works")
@@ -369,7 +456,7 @@ elif page == "Files":
         with st.container(border=True):
             name_col, status_col, action_col = st.columns([3, 2, 1.5])
             name_col.markdown(f"**📄 {file_row['filename']}**")
-            name_col.caption(f"{file_row['file_type'].upper()} · Added {file_row['uploaded_at'][:10]}")
+            name_col.caption(f"{file_row['file_type'].upper()} · Added {file_row['uploaded_at'][:10]} · {file_row.get('created_by') or file_row.get('member_name') or 'Project member'}")
             status = file_row.get("analysis_status", "Pending")
             status_col.write({"Analyzed": "✓ Analyzed by Gemini · Memory updated", "Analyzing": "Analyzing with Gemini…", "Error": "Analysis needs attention", "Pending": "Ready for Gemini analysis"}.get(status, status))
             if status == "Error" and file_row.get("analysis_error"):
@@ -392,16 +479,18 @@ elif page == "Project Chat":
         with st.chat_message(message["role"], avatar="↗" if message["role"] == "assistant" else None):
             if message["role"] == "assistant":
                 st.caption("Gemini · Project context")
+            else:
+                st.caption(message.get("member_name", "Member"))
             st.markdown(message["content"])
     question = st.chat_input("Ask about this project…")
     if question:
-        db.save_message(current_id, "user", question)
+        db.save_message(current_id, "user", question, st.session_state.member_name)
         if not ai.available:
             st.error("Gemini is not connected. Your question was not answered or labeled as a Gemini response.")
         else:
             try:
                 answer = ai.ask_project_question(question, project_context(current_id))
-                db.save_message(current_id, "assistant", answer)
+                db.save_message(current_id, "assistant", answer, "Gemini")
             except Exception as exc:
                 st.error(f"Gemini could not answer this question: {exc}")
         st.rerun()
@@ -415,7 +504,7 @@ elif page == "Project Chat":
                 description = st.text_input("Description (optional)")
                 if st.form_submit_button("Save decision"):
                     if title.strip():
-                        db.save_decision(current_id, title, description, why)
+                        db.save_decision(current_id, title, description, why, member_name=st.session_state.member_name)
                         st.success("Decision added to Project Memory.")
                         st.rerun()
                     else:
@@ -426,7 +515,7 @@ elif page == "Project Chat":
                 assignee = st.text_input("Assignee (optional)")
                 if st.form_submit_button("Create task"):
                     if title.strip():
-                        db.save_task(current_id, title, assignee=assignee)
+                        db.save_task(current_id, title, assignee=assignee, member_name=st.session_state.member_name)
                         st.rerun()
                     else:
                         st.warning("Enter a task title.")
@@ -481,10 +570,7 @@ elif page == "Memory":
             source = st.text_input("Source (optional)")
             if st.form_submit_button("Save to memory"):
                 if content.strip():
-                    from services.project_service import connect, record, save_memory
-                    save_memory(current_id, category, content, source or "user")
-                    with connect() as connection:
-                        record(connection, current_id, "MEMORY_UPDATED", f"Added {category.lower()} context")
+                    db.save_memory(current_id, category, content, source or "user", member_name=st.session_state.member_name)
                     st.rerun()
                 else:
                     st.warning("Add some context first.")
@@ -498,7 +584,7 @@ elif page == "Tasks":
         add_task = action_col.form_submit_button("Add task", type="primary", use_container_width=True)
     if add_task:
         if title.strip():
-            db.save_task(current_id, title, assignee=assignee)
+            db.save_task(current_id, title, assignee=assignee, member_name=st.session_state.member_name)
             st.rerun()
         else:
             st.warning("Enter a task title.")
@@ -509,11 +595,12 @@ elif page == "Tasks":
         with st.container(border=True):
             task_col, status_col = st.columns([4, 1.5])
             task_col.markdown(f"**{task['title']}**")
-            task_col.caption(f"{task['assignee'] or 'Unassigned'} · {task['source'] or 'User-added'}")
+            author = task.get("member_name") or task.get("created_by") or "Project member"
+            task_col.caption(f"{task['assignee'] or 'Unassigned'} · Created by {author} · {task['source'] or 'User-added'}")
             statuses = ["Pending", "In Progress", "Completed"]
             selected = status_col.selectbox("Status", statuses, index=statuses.index(task["status"]) if task["status"] in statuses else 0, key=f"status_{task['id']}", label_visibility="collapsed")
             if selected != task["status"]:
-                db.update_task(task["id"], selected, current_id)
+                db.update_task(task["id"], selected, current_id, st.session_state.member_name)
                 st.rerun()
 
 elif page == "Activity":

@@ -1,5 +1,13 @@
 # HANDOFF --- Design & Architecture Document
 
+## Shared Project Architecture Addendum
+
+Streamlit → Application Services (project_service / database_service) → Supabase PostgreSQL and Storage
+
+Gemini API receives the selected project's shared context.
+
+project_service selects Supabase when cloud configuration is present and otherwise retains SQLite for local development. App pages call the service layer rather than Supabase directly. Every project record query is filtered by project_id. Project codes resolve invite links; members join with a display name and a session-local identity. The MVP has no login system or role-based permissions.
+
 ## 1. Design Objective
 
 Build a lightweight collaborative project workspace where Gemini
